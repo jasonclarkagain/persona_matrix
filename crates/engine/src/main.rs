@@ -35,15 +35,28 @@ async fn main() {
 }
 
 async fn get_stats() -> Json<serde_json::Value> {
+    // Read the log to find the latest CPU load
+    let content = read_to_string("logs/sentinel.log").unwrap_or_default();
+    let last_load = content.lines()
+        .filter(|l| l.contains("CPU Load:"))
+        .last()
+        .and_then(|l| l.split("CPU Load: ").last())
+        .and_then(|l| l.split('%').next())
+        .and_then(|l| l.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    // Stability is inverse to CPU load (100 - load)
+    let stability = (100.0 - last_load).clamp(0.0, 100.0) / 100.0;
+
     Json(serde_json::json!({
-        "stability": 0.98,
+        "stability": stability,
         "active_persona": "Old Man Yeller",
-        "shield_status": "Aggressive"
+        "shield_status": if stability < 0.5 { "CRITICAL" } else { "Aggressive" }
     }))
 }
 
 async fn get_logs() -> Json<serde_json::Value> {
-    let content = read_to_string("logs/sentinel.log").unwrap_or_else(|_| "No logs found".to_string());
+    let content = read_to_string("logs/sentinel.log").unwrap_or_else(|_| "Waiting...".to_string());
     let last_lines: Vec<&str> = content.lines().rev().take(5).collect();
     Json(serde_json::json!({ "entries": last_lines }))
 }
