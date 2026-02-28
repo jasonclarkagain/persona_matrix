@@ -1,20 +1,12 @@
 #!/bin/bash
-echo "🚀 [GENESIS] Initializing Persona Matrix v3.0 Stack..."
+# --- PERSONA MATRIX GENESIS LAUNCH ---
+echo "🌌 [GENESIS] Initializing Matrix Environment..."
 
-# 1. Directory & Model Scaffolding
-mkdir -p models logs static/css static/js
-echo "📂 [GENESIS] Directory structure verified."
+# 1. Start the Sentinel in the background
+./scripts/sentinel_monitor.sh &
+SENTINEL_PID=$!
+echo "📡 [SENTINEL] Active with PID: $SENTINEL_PID"
 
-# 2. Build Containerized Infrastructure
-# Note: We use the local context since we are in the root
-echo "🏗️ [GENESIS] Building immutable containers..."
-docker-compose build --quiet
-
-# 3. Launch
-echo "🚢 [GENESIS] Deploying services..."
-docker-compose up -d
-
-echo "================================================================"
-echo "✅ PERSONA MATRIX DEPLOYED SUCCESSFULLY"
-echo "▶ CONTROL PANEL: http://localhost:3000"
-echo "================================================================"
+# 2. Launch the Rust Engine
+echo "🚀 [ENGINE] Starting Persona Engine on Port 3000..."
+cargo run -p persona_engine
