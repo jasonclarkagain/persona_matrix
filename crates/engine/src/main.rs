@@ -1,51 +1,42 @@
 use axum::{routing::get, Json, Router};
+use tower_http::services::ServeDir;
 use std::net::SocketAddr;
-use persona_shield::OperatorShield;
-use serde::Serialize;
 use std::sync::{Arc, Mutex};
-
-#[derive(Serialize)]
-struct HealthStatus {
-    status: String,
-    shield_active: bool,
-    version: String,
-}
+use persona_shield::OperatorShield;
+use persona_analytics::AnalyticsEngine;
 
 struct AppState {
     shield: Mutex<OperatorShield>,
+    analytics: Mutex<AnalyticsEngine>,
 }
 
 #[tokio::main]
 async fn main() {
-    // Initialize the Corporate Logging Layer
     tracing_subscriber::fmt::init();
-
-    // Create the Protected State
-    let shared_state = Arc::new(AppState {
-        shield: Mutex::new(OperatorShield::new(0.5)), // 50% smoothing by default
+    
+    let state = Arc::new(AppState {
+        shield: Mutex::new(OperatorShield::new(0.5)),
+        analytics: Mutex::new(AnalyticsEngine::new()),
     });
 
-    // Define the Glassy API Routes
     let app = Router::new()
-        .route("/api/personas", get(list_personas))
-        .route("/health", get(health_check))
-        .with_state(shared_state);
+        .nest_service("/", ServeDir::new("static"))
+        .route("/health", get(|| async { "ONLINE" }))
+        .route("/api/stats", get(get_stats))
+        .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    println!("🚀 [ENGINE] Matrix Heartbeat started on {}", addr);
+    println!("🚀 [ENGINE] Glassy UI online at http://localhost:3000");
     
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn health_check() -> Json<HealthStatus> {
-    Json(HealthStatus {
-        status: "ONLINE".to_string(),
-        shield_active: true,
-        version: "3.0.0-Corporate".to_string(),
-    })
-}
-
-async fn list_personas() -> Json<Vec<String>> {
-    Json(vec!["Old Man Yeller".to_string(), "The Manifestor".to_string()])
+async fn get_stats() -> Json<serde_json::Value> {
+    // In a real session, this would pull from the Analytics crate
+    Json(serde_json::json!({
+        "stability": 0.98,
+        "active_persona": "Old Man Yeller",
+        "shield_status": "Aggressive"
+    }))
 }
