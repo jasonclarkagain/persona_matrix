@@ -1,0 +1,6 @@
+target/
+models/*.onnx
+models/*.bin
+.env
+logs/
+*.log

@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  engine:
+    build: 
+      context: .
+      dockerfile: infra/docker/Dockerfile
+    ports: ["3000:3000"]
+    networks: ["matrix_net"]
+
+  prometheus:
+    image: prom/prometheus
+    volumes: ["./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"]
+    networks: ["matrix_net"]
+
+  grafana:
+    image: grafana/grafana
+    environment: ["GF_AUTH_ANONYMOUS_ENABLED=true"]
+    networks: ["matrix_net"]
+    ports: ["3001:3000"]
+
+networks:
+  matrix_net:
+    driver: bridge
