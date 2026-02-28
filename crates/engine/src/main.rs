@@ -1,62 +1,50 @@
-use axum::{routing::get, Json, Router};
+use axum::{routing::{get, post}, Json, Router, extract::State};
 use tower_http::services::ServeDir;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::fs::read_to_string;
-use persona_shield::OperatorShield;
-use persona_analytics::AnalyticsEngine;
+use std::fs::{read_to_string, write};
+use std::process::Command;
+use serde::{Deserialize, Serialize};
 
-struct AppState {
-    _shield: Mutex<OperatorShield>,
-    _analytics: Mutex<AnalyticsEngine>,
-}
+#[derive(Serialize, Deserialize, Clone)]
+struct PersonaConfig { name: String, mode: String }
+struct AppState { active_persona: Mutex<PersonaConfig> }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
-
     let state = Arc::new(AppState {
-        _shield: Mutex::new(OperatorShield::new(0.5)),
-        _analytics: Mutex::new(AnalyticsEngine::new()),
+        active_persona: Mutex::new(PersonaConfig { name: "Old Man Yeller".to_string(), mode: "Aggressive".to_string() }),
     });
 
     let app = Router::new()
         .nest_service("/", ServeDir::new("static"))
         .route("/api/stats", get(get_stats))
-        .route("/api/logs", get(get_logs))
+        .route("/api/switch", post(switch_persona))
+        .route("/api/panic", post(panic_wipe))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 0));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    let local_addr = listener.local_addr().unwrap();
-    
-    println!("🚀 [ENGINE] Matrix Interface live at http://{}", local_addr);
+    println!("🚀 [ENGINE] Matrix Interface live at http://{}", listener.local_addr().unwrap());
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn get_stats() -> Json<serde_json::Value> {
-    // Read the log to find the latest CPU load
-    let content = read_to_string("logs/sentinel.log").unwrap_or_default();
-    let last_load = content.lines()
-        .filter(|l| l.contains("CPU Load:"))
-        .last()
-        .and_then(|l| l.split("CPU Load: ").last())
-        .and_then(|l| l.split('%').next())
-        .and_then(|l| l.parse::<f64>().ok())
-        .unwrap_or(0.0);
-
-    // Stability is inverse to CPU load (100 - load)
-    let stability = (100.0 - last_load).clamp(0.0, 100.0) / 100.0;
-
-    Json(serde_json::json!({
-        "stability": stability,
-        "active_persona": "Old Man Yeller",
-        "shield_status": if stability < 0.5 { "CRITICAL" } else { "Aggressive" }
-    }))
+async fn panic_wipe() -> Json<serde_json::Value> {
+    let _ = Command::new("bash").arg("scripts/panic_wipe.sh").spawn();
+    Json(serde_json::json!({ "status": "wiping" }))
 }
 
-async fn get_logs() -> Json<serde_json::Value> {
-    let content = read_to_string("logs/sentinel.log").unwrap_or_else(|_| "Waiting...".to_string());
-    let last_lines: Vec<&str> = content.lines().rev().take(5).collect();
-    Json(serde_json::json!({ "entries": last_lines }))
+async fn get_stats(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let persona = state.active_persona.lock().unwrap();
+    let content = read_to_string("logs/sentinel.log").unwrap_or_default();
+    let last_load = content.lines().filter(|l| l.contains("CPU Load:")).last()
+        .and_then(|l| l.split("CPU Load: ").last()).and_then(|l| l.split('%').next()).and_then(|l| l.parse::<f64>().ok()).unwrap_or(0.0);
+    Json(serde_json::json!({ "stability": (100.0 - last_load) / 100.0, "active_persona": persona.name, "mode": persona.mode }))
+}
+
+async fn switch_persona(State(state): State<Arc<AppState>>, Json(payload): Json<PersonaConfig>) -> Json<serde_json::Value> {
+    let mut persona = state.active_persona.lock().unwrap();
+    *persona = payload.clone();
+    let _ = write("logs/matrix_mode.conf", &payload.mode);
+    Json(serde_json::json!({ "status": "switched" }))
 }

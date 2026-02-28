@@ -1,17 +1,23 @@
 #!/bin/bash
-# --- SENTINEL GUARDIAN v1.0 ---
+# --- ADAPTIVE SENTINEL GUARDIAN v1.1 ---
 LOG_FILE="logs/sentinel.log"
+MODE_FILE="logs/matrix_mode.conf"
+mkdir -p logs
 
-echo "$(date) [SENTINEL] Guardian Active. Tracking system stability..." >> $LOG_FILE
+echo "$(date) [SENTINEL] Adaptive Guardian Active." >> $LOG_FILE
 
 while true; do
-    # Capture CPU load for the Analytics engine
+    # Check current persona mode
+    CURRENT_MODE=$(cat $MODE_FILE 2>/dev/null || echo "Aggressive")
+
+    # Capture CPU load
     CPU_LOAD=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
-    echo "$(date) [HEARTBEAT] CPU Load: $CPU_LOAD%" >> $LOG_FILE
+    echo "$(date) [HEARTBEAT] ($CURRENT_MODE) CPU Load: $CPU_LOAD%" >> $LOG_FILE
     
-    # Simple alert logic if the Matrix experiences high stress
-    if (( $(echo "$CPU_LOAD > 90.0" | bc -l) )); then
-        echo "$(date) [CRITICAL] High System Stress Detected!" >> $LOG_FILE
+    # Adjust sleep interval based on Persona
+    if [ "$CURRENT_MODE" == "Stealth" ]; then
+        sleep 60
+    else
+        sleep 10
     fi
-    sleep 10
 done
