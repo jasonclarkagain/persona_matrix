@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Persona Matrix v3.0</title>
+    <style>
+        body { background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace; margin: 0; padding: 20px; overflow: hidden; }
+        .matrix-grid { display: grid; grid-template-columns: 300px 1fr 300px; gap: 20px; height: 95vh; }
+        .panel { background: #111; border: 1px solid #00ff88; padding: 15px; overflow-y: auto; }
+        .persona-card { background: #1a1a1a; border: 1px solid #333; padding: 10px; margin: 10px 0; cursor: pointer; transition: 0.3s; }
+        .persona-card:hover { border-color: #00ff88; box-shadow: 0 0 10px rgba(0, 255, 136, 0.3); }
+        .main-stage { background: #000; border: 2px solid #00ff88; position: relative; display: flex; flex-direction: column; }
+        #video-output { flex: 1; background: #050505; object-fit: cover; }
+        .metrics { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 10px; font-size: 12px; border: 1px solid #00ff88; }
+        button { background: #00ff88; color: #000; border: none; padding: 10px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
+        input[type="range"] { width: 100%; accent-color: #00ff88; }
+    </style>
+</head>
+<body>
+    <div class="matrix-grid">
+        <div class="panel">
+            <h3>▶ ARCHETYPES</h3>
+            <div class="persona-card" onclick="select('old_man_yeller')"><strong>Old Man Yeller</strong><br><small>Gruff, suspicious, volatile</small></div>
+            <div class="persona-card" onclick="select('south_central_commie')"><strong>South Central Commie</strong><br><small>Revolutionary, solidary</small></div>
+            <div class="persona-card" onclick="select('sigma_male')"><strong>Sigma Male</strong><br><small>Lone wolf, stoic</small></div>
+        </div>
+        
+        <div class="main-stage">
+            <div class="metrics">
+                LATENCY: <span id="lat">0</span>ms | FPS: 60<br>
+                ACTIVE: <span id="active-id">NONE</span>
+            </div>
+            <video id="video-output" autoplay></video>
+            <div style="padding:15px; background:#111; display:flex; gap:10px;">
+                <button onclick="initCam()">INIT CAMERA</button>
+                <button onclick="activate()">ACTIVATE NEURAL LINK</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>▶ MODULATION</h3>
+            <label>EMOTIONAL INTENSITY</label>
+            <input type="range" min="0" max="200" value="100">
+            <label>VOCAL PITCH</label>
+            <input type="range" min="-12" max="12" value="0">
+            <label>GAZE INTENSITY</label>
+            <input type="range" min="0" max="100" value="50">
+        </div>
+    </div>
+
+    <script>
+        let selected = null;
+        function select(id) {
+            selected = id;
+            document.getElementById('active-id').innerText = id;
+        }
+        async function initCam() {
+            const stream = await navigator.mediaDevices.getUserMedia({video: true});
+            document.getElementById('video-output').srcObject = stream;
+        }
+        async function activate() {
+            if(!selected) return alert("Select a persona first.");
+            await fetch('/api/activate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({persona_id: selected})
+            });
+            alert("Neural Puppetry Link Established.");
+        }
+    </script>
+</body>
+</html>
