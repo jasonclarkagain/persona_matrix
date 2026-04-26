@@ -1,4 +1,4 @@
-use ax_core::{routing::{get, post}, Router, Json};
+use axum::{routing::{get, post}, Router, Json};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -47,8 +47,8 @@ async fn main() {
         .route("/api/activate", post(activate_persona))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    println!("🌌 [MATRIX v3.0] Neural Puppetry Interface live at http://localhost:3000");
+    let addr = SocketAddr::from(([0, 0, 0, 0], 5000));
+    println!("🌌 [MATRIX v3.0] Neural Puppetry Interface live at http://0.0.0.0:5000");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
