@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>Persona Matrix v3.0</title>
     <style>
         body { background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace; margin: 0; padding: 20px; overflow: hidden; }
@@ -8,64 +9,574 @@
         .panel { background: #111; border: 1px solid #00ff88; padding: 15px; overflow-y: auto; }
         .persona-card { background: #1a1a1a; border: 1px solid #333; padding: 10px; margin: 10px 0; cursor: pointer; transition: 0.3s; }
         .persona-card:hover { border-color: #00ff88; box-shadow: 0 0 10px rgba(0, 255, 136, 0.3); }
+        .persona-card.active { border-color: #00ff88; background: #0d2018; box-shadow: 0 0 15px rgba(0, 255, 136, 0.5); }
         .main-stage { background: #000; border: 2px solid #00ff88; position: relative; display: flex; flex-direction: column; }
-        #video-output { flex: 1; background: #050505; object-fit: cover; }
-        .metrics { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 10px; font-size: 12px; border: 1px solid #00ff88; }
-        button { background: #00ff88; color: #000; border: none; padding: 10px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
+        .stage-canvas-wrap { flex: 1; position: relative; background: #050505; overflow: hidden; }
+        #video-input { display: none; }
+        #stage-canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+        .metrics { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 10px; font-size: 12px; border: 1px solid #00ff88; z-index: 10; }
+        button { background: #00ff88; color: #000; border: none; padding: 10px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; font-family: inherit; }
+        button:disabled { background: #222; color: #555; cursor: not-allowed; }
         input[type="range"] { width: 100%; accent-color: #00ff88; }
+        label { display: block; margin-top: 12px; font-size: 12px; }
+        .val { color: #fff; }
     </style>
 </head>
 <body>
     <div class="matrix-grid">
         <div class="panel">
             <h3>▶ ARCHETYPES</h3>
-            <div class="persona-card" onclick="select('old_man_yeller')"><strong>Old Man Yeller</strong><br><small>Gruff, suspicious, volatile</small></div>
-            <div class="persona-card" onclick="select('south_central_commie')"><strong>South Central Commie</strong><br><small>Revolutionary, solidary</small></div>
-            <div class="persona-card" onclick="select('sigma_male')"><strong>Sigma Male</strong><br><small>Lone wolf, stoic</small></div>
+            <div class="persona-card" data-id="none" onclick="select('none')"><strong>None</strong><br><small>Raw camera, no overlay</small></div>
+            <div class="persona-card" data-id="old_man_yeller" onclick="select('old_man_yeller')"><strong>Old Man Yeller</strong><br><small>Bushy brows, mustache, monocle</small></div>
+            <div class="persona-card" data-id="south_central_commie" onclick="select('south_central_commie')"><strong>South Central Commie</strong><br><small>Red beret, beard, cigar</small></div>
+            <div class="persona-card" data-id="sigma_male" onclick="select('sigma_male')"><strong>Sigma Male</strong><br><small>Shades, goatee, smirk</small></div>
         </div>
-        
+
         <div class="main-stage">
-            <div class="metrics">
-                LATENCY: <span id="lat">0</span>ms | FPS: 60<br>
-                ACTIVE: <span id="active-id">NONE</span>
+            <div class="stage-canvas-wrap">
+                <div class="metrics">
+                    FPS: <span id="fps" class="val">0</span> |
+                    FACE: <span id="face-state" class="val">—</span><br>
+                    ACTIVE: <span id="active-id" class="val">NONE</span>
+                </div>
+                <video id="video-input" autoplay playsinline muted></video>
+                <canvas id="stage-canvas"></canvas>
             </div>
-            <video id="video-output" autoplay></video>
             <div style="padding:15px; background:#111; display:flex; gap:10px;">
-                <button onclick="initCam()">INIT CAMERA</button>
-                <button onclick="activate()">ACTIVATE NEURAL LINK</button>
+                <button id="cam-btn" onclick="initCam()">INIT CAMERA</button>
             </div>
         </div>
 
         <div class="panel">
             <h3>▶ MODULATION</h3>
-            <label>EMOTIONAL INTENSITY</label>
-            <input type="range" min="0" max="200" value="100">
-            <label>VOCAL PITCH</label>
-            <input type="range" min="-12" max="12" value="0">
-            <label>GAZE INTENSITY</label>
-            <input type="range" min="0" max="100" value="50">
+            <label>OVERLAY SCALE <span id="scale-val" class="val">100%</span></label>
+            <input type="range" id="scale-slider" min="50" max="200" value="100">
+            <label>OVERLAY OPACITY <span id="opacity-val" class="val">100%</span></label>
+            <input type="range" id="opacity-slider" min="0" max="100" value="100">
+            <label>VERTICAL OFFSET <span id="offset-val" class="val">0</span></label>
+            <input type="range" id="offset-slider" min="-50" max="50" value="0">
         </div>
     </div>
 
-    <script>
-        let selected = null;
-        function select(id) {
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver }
+            from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+        const video = document.getElementById('video-input');
+        const canvas = document.getElementById('stage-canvas');
+        const ctx = canvas.getContext('2d');
+        const fpsEl = document.getElementById('fps');
+        const faceEl = document.getElementById('face-state');
+        const activeEl = document.getElementById('active-id');
+
+        const scaleSlider = document.getElementById('scale-slider');
+        const opacitySlider = document.getElementById('opacity-slider');
+        const offsetSlider = document.getElementById('offset-slider');
+        const scaleVal = document.getElementById('scale-val');
+        const opacityVal = document.getElementById('opacity-val');
+        const offsetVal = document.getElementById('offset-val');
+
+        scaleSlider.oninput = () => scaleVal.textContent = scaleSlider.value + '%';
+        opacitySlider.oninput = () => opacityVal.textContent = opacitySlider.value + '%';
+        offsetSlider.oninput = () => offsetVal.textContent = offsetSlider.value;
+
+        let landmarker = null;
+        let selected = 'none';
+        let lastTs = -1;
+        let frameCount = 0;
+        let lastFpsT = performance.now();
+
+        window.select = function(id) {
             selected = id;
-            document.getElementById('active-id').innerText = id;
-        }
-        async function initCam() {
-            const stream = await navigator.mediaDevices.getUserMedia({video: true});
-            document.getElementById('video-output').srcObject = stream;
-        }
-        async function activate() {
-            if(!selected) return alert("Select a persona first.");
-            await fetch('/api/activate', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({persona_id: selected})
+            activeEl.textContent = id.toUpperCase();
+            document.querySelectorAll('.persona-card').forEach(c => {
+                c.classList.toggle('active', c.dataset.id === id);
             });
-            alert("Neural Puppetry Link Established.");
+            // Notify backend (existing API)
+            if (id !== 'none') {
+                fetch('/api/activate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({persona_id: id})
+                }).catch(() => {});
+            }
+        };
+
+        window.initCam = async function() {
+            const btn = document.getElementById('cam-btn');
+            btn.disabled = true;
+            btn.textContent = 'LOADING MODEL…';
+            try {
+                const filesetResolver = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+                );
+                landmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                });
+
+                btn.textContent = 'STARTING CAMERA…';
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720, facingMode: 'user' }
+                });
+                video.srcObject = stream;
+                await video.play();
+
+                btn.textContent = 'NEURAL LINK ACTIVE';
+                requestAnimationFrame(loop);
+            } catch (err) {
+                console.error(err);
+                btn.disabled = false;
+                btn.textContent = 'INIT CAMERA';
+                alert('Camera/model init failed: ' + err.message);
+            }
+        };
+
+        // Selected mediapipe FaceLandmarker landmark indices (478-pt model)
+        const IDX = {
+            FOREHEAD: 10,
+            CHIN: 152,
+            NOSE_TIP: 1,
+            NOSE_BRIDGE: 6,
+            LEFT_EYE_OUTER: 33,   // viewer's left side
+            LEFT_EYE_INNER: 133,
+            RIGHT_EYE_OUTER: 263,
+            RIGHT_EYE_INNER: 362,
+            LEFT_EYE_TOP: 159,
+            LEFT_EYE_BOT: 145,
+            RIGHT_EYE_TOP: 386,
+            RIGHT_EYE_BOT: 374,
+            LEFT_BROW_OUTER: 70,
+            LEFT_BROW_INNER: 107,
+            LEFT_BROW_TOP: 105,
+            RIGHT_BROW_OUTER: 300,
+            RIGHT_BROW_INNER: 336,
+            RIGHT_BROW_TOP: 334,
+            MOUTH_LEFT: 61,
+            MOUTH_RIGHT: 291,
+            MOUTH_TOP: 13,
+            MOUTH_BOTTOM: 14,
+            UPPER_LIP_TOP: 0,
+            LEFT_CHEEK: 234,
+            RIGHT_CHEEK: 454
+        };
+
+        function pt(landmarks, idx, w, h) {
+            const lm = landmarks[idx];
+            return { x: lm.x * w, y: lm.y * h };
         }
+
+        function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+        function angle(a, b) { return Math.atan2(b.y - a.y, b.x - a.x); }
+        function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+        function loop() {
+            if (!landmarker || video.readyState < 2) {
+                requestAnimationFrame(loop);
+                return;
+            }
+
+            // Match canvas to video frame.
+            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            }
+
+            // Mirror like a selfie cam.
+            ctx.save();
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            const ts = performance.now();
+            if (ts !== lastTs) {
+                const result = landmarker.detectForVideo(video, ts);
+                lastTs = ts;
+
+                if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+                    faceEl.textContent = 'LOCKED';
+                    // Mirror landmark x to match the mirrored video.
+                    const raw = result.faceLandmarks[0];
+                    const mirrored = raw.map(p => ({ x: 1 - p.x, y: p.y, z: p.z }));
+                    drawOverlay(mirrored);
+                } else {
+                    faceEl.textContent = 'SEARCHING…';
+                }
+            }
+
+            // FPS
+            frameCount++;
+            if (ts - lastFpsT > 500) {
+                fpsEl.textContent = Math.round(frameCount * 1000 / (ts - lastFpsT));
+                frameCount = 0;
+                lastFpsT = ts;
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        function drawOverlay(landmarks) {
+            if (selected === 'none') return;
+
+            const w = canvas.width, h = canvas.height;
+            const userScale = parseInt(scaleSlider.value, 10) / 100;
+            const userOpacity = parseInt(opacitySlider.value, 10) / 100;
+            const userOffset = parseInt(offsetSlider.value, 10);
+
+            // Useful anchors
+            const leftEye = pt(landmarks, IDX.LEFT_EYE_OUTER, w, h);
+            const rightEye = pt(landmarks, IDX.RIGHT_EYE_OUTER, w, h);
+            const leftEyeIn = pt(landmarks, IDX.LEFT_EYE_INNER, w, h);
+            const rightEyeIn = pt(landmarks, IDX.RIGHT_EYE_INNER, w, h);
+            const noseTip = pt(landmarks, IDX.NOSE_TIP, w, h);
+            const noseBridge = pt(landmarks, IDX.NOSE_BRIDGE, w, h);
+            const mouthLeft = pt(landmarks, IDX.MOUTH_LEFT, w, h);
+            const mouthRight = pt(landmarks, IDX.MOUTH_RIGHT, w, h);
+            const upperLip = pt(landmarks, IDX.UPPER_LIP_TOP, w, h);
+            const chin = pt(landmarks, IDX.CHIN, w, h);
+            const forehead = pt(landmarks, IDX.FOREHEAD, w, h);
+            const leftBrow = pt(landmarks, IDX.LEFT_BROW_TOP, w, h);
+            const rightBrow = pt(landmarks, IDX.RIGHT_BROW_TOP, w, h);
+            const leftCheek = pt(landmarks, IDX.LEFT_CHEEK, w, h);
+            const rightCheek = pt(landmarks, IDX.RIGHT_CHEEK, w, h);
+
+            const eyeDist = dist(leftEye, rightEye);
+            const faceTilt = angle(leftEye, rightEye);
+            const faceCenter = mid(leftEye, rightEye);
+
+            ctx.save();
+            ctx.globalAlpha = userOpacity;
+            // Apply user vertical offset & scale around face center
+            ctx.translate(0, userOffset);
+
+            if (selected === 'old_man_yeller') {
+                drawOldManYeller({
+                    eyeDist: eyeDist * userScale, faceTilt, faceCenter,
+                    leftEye, rightEye, leftBrow, rightBrow,
+                    upperLip, mouthLeft, mouthRight, noseTip, chin
+                });
+            } else if (selected === 'south_central_commie') {
+                drawCommie({
+                    eyeDist: eyeDist * userScale, faceTilt, faceCenter,
+                    leftEye, rightEye, forehead, mouthLeft, mouthRight,
+                    chin, upperLip, leftCheek, rightCheek
+                });
+            } else if (selected === 'sigma_male') {
+                drawSigma({
+                    eyeDist: eyeDist * userScale, faceTilt, faceCenter,
+                    leftEye, rightEye, leftEyeIn, rightEyeIn,
+                    upperLip, mouthLeft, mouthRight, chin
+                });
+            }
+
+            ctx.restore();
+        }
+
+        // ---------- OLD MAN YELLER ----------
+        function drawOldManYeller(a) {
+            // Bushy white eyebrows
+            drawBushyBrow(a.leftBrow, a.eyeDist * 0.55, a.faceTilt, '#f0f0f0');
+            drawBushyBrow(a.rightBrow, a.eyeDist * 0.55, a.faceTilt, '#f0f0f0');
+
+            // Big white walrus mustache below the nose / above the lip
+            const mustacheCenter = {
+                x: (a.upperLip.x + a.noseTip.x) / 2,
+                y: (a.upperLip.y * 1.6 + a.noseTip.y * 0.4) / 2 + a.eyeDist * 0.05
+            };
+            drawWalrusMustache(mustacheCenter, a.eyeDist * 1.2, a.faceTilt, '#ececec');
+
+            // Monocle on right eye (viewer-right => character's left eye)
+            drawMonocle(a.rightEye, a.eyeDist * 0.55, '#ffd24a');
+        }
+
+        function drawBushyBrow(center, width, tilt, color) {
+            ctx.save();
+            ctx.translate(center.x, center.y - width * 0.15);
+            ctx.rotate(tilt);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, width / 2, width * 0.18, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Hairy strokes
+            ctx.strokeStyle = color;
+            ctx.lineWidth = Math.max(1, width * 0.04);
+            for (let i = -5; i <= 5; i++) {
+                const x = (i / 5) * (width / 2);
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x + width * 0.03, -width * 0.25);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawWalrusMustache(center, width, tilt, color) {
+            ctx.save();
+            ctx.translate(center.x, center.y);
+            ctx.rotate(tilt);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            // Two big lobes
+            ctx.moveTo(0, -width * 0.05);
+            ctx.bezierCurveTo(-width * 0.2, -width * 0.15, -width * 0.55, 0, -width * 0.5, width * 0.25);
+            ctx.bezierCurveTo(-width * 0.45, width * 0.35, -width * 0.15, width * 0.2, 0, width * 0.15);
+            ctx.bezierCurveTo(width * 0.15, width * 0.2, width * 0.45, width * 0.35, width * 0.5, width * 0.25);
+            ctx.bezierCurveTo(width * 0.55, 0, width * 0.2, -width * 0.15, 0, -width * 0.05);
+            ctx.fill();
+            // Tiny hair strokes
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = Math.max(1, width * 0.01);
+            for (let i = -10; i <= 10; i++) {
+                const x = (i / 10) * width * 0.45;
+                ctx.beginPath();
+                ctx.moveTo(x, width * 0.02);
+                ctx.lineTo(x * 1.05, width * 0.18);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawMonocle(center, radius, rim) {
+            ctx.save();
+            ctx.translate(center.x, center.y);
+            // Lens
+            ctx.fillStyle = 'rgba(180, 220, 255, 0.18)';
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.fill();
+            // Rim
+            ctx.strokeStyle = rim;
+            ctx.lineWidth = Math.max(2, radius * 0.12);
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            // Glint
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.beginPath();
+            ctx.arc(-radius * 0.4, -radius * 0.4, radius * 0.18, 0, Math.PI * 2);
+            ctx.fill();
+            // Chain
+            ctx.strokeStyle = rim;
+            ctx.lineWidth = Math.max(1, radius * 0.06);
+            ctx.beginPath();
+            ctx.moveTo(radius, radius * 0.2);
+            ctx.bezierCurveTo(radius * 1.5, radius * 1.2, radius * 2.0, radius * 2.5, radius * 2.5, radius * 4);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // ---------- SOUTH CENTRAL COMMIE ----------
+        function drawCommie(a) {
+            // Red beret on the forehead, tilted
+            const beretCenter = {
+                x: a.forehead.x - a.eyeDist * 0.2 * Math.cos(a.faceTilt),
+                y: a.forehead.y - a.eyeDist * 0.6 * Math.cos(a.faceTilt)
+            };
+            drawBeret(beretCenter, a.eyeDist * 1.6, a.faceTilt, '#c8102e');
+
+            // Full beard along the jawline / chin
+            drawBeard({
+                left: a.leftCheek, right: a.rightCheek, chin: a.chin,
+                mouthLeft: a.mouthLeft, mouthRight: a.mouthRight,
+                color: '#1a1a1a'
+            });
+
+            // Cigar coming out of the mouth
+            drawCigar(a.mouthLeft, a.mouthRight, a.eyeDist);
+        }
+
+        function drawBeret(center, width, tilt, color) {
+            ctx.save();
+            ctx.translate(center.x, center.y);
+            ctx.rotate(tilt - 0.25);
+            // Brim
+            ctx.fillStyle = '#3a0a0f';
+            ctx.beginPath();
+            ctx.ellipse(0, width * 0.05, width * 0.55, width * 0.12, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Cap dome
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.ellipse(0, -width * 0.1, width * 0.6, width * 0.35, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Top tilt
+            ctx.beginPath();
+            ctx.ellipse(width * 0.25, -width * 0.2, width * 0.4, width * 0.18, -0.4, 0, Math.PI * 2);
+            ctx.fill();
+            // Red star
+            ctx.fillStyle = '#ffe44d';
+            drawStar(-width * 0.25, -width * 0.1, width * 0.08, 5);
+            ctx.restore();
+        }
+
+        function drawStar(cx, cy, r, points) {
+            ctx.beginPath();
+            for (let i = 0; i < points * 2; i++) {
+                const ang = (i * Math.PI) / points - Math.PI / 2;
+                const rr = i % 2 === 0 ? r : r / 2.4;
+                const x = cx + Math.cos(ang) * rr;
+                const y = cy + Math.sin(ang) * rr;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function drawBeard({ left, right, chin, mouthLeft, mouthRight, color }) {
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(left.x, left.y);
+            ctx.bezierCurveTo(
+                left.x, (left.y + chin.y) / 2 + 20,
+                chin.x - 60, chin.y + 40,
+                chin.x, chin.y + 30
+            );
+            ctx.bezierCurveTo(
+                chin.x + 60, chin.y + 40,
+                right.x, (right.y + chin.y) / 2 + 20,
+                right.x, right.y
+            );
+            // Top edge follows under the lips
+            ctx.lineTo(mouthRight.x + 10, mouthRight.y + 8);
+            ctx.bezierCurveTo(
+                (mouthLeft.x + mouthRight.x) / 2, mouthRight.y + 18,
+                (mouthLeft.x + mouthRight.x) / 2, mouthLeft.y + 18,
+                mouthLeft.x - 10, mouthLeft.y + 8
+            );
+            ctx.closePath();
+            ctx.fill();
+            // Hair texture
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 60; i++) {
+                const t = Math.random();
+                const x = left.x + (right.x - left.x) * t;
+                const y = (left.y + chin.y) / 2 + Math.random() * (chin.y - left.y) * 0.7;
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x + (Math.random() - 0.5) * 4, y + 6);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawCigar(mouthLeft, mouthRight, eyeDist) {
+            ctx.save();
+            const start = mid(mouthLeft, mouthRight);
+            const len = eyeDist * 1.3;
+            const thickness = eyeDist * 0.18;
+            const ang = angle(mouthLeft, mouthRight) - 0.15;
+            ctx.translate(start.x, start.y);
+            ctx.rotate(ang);
+            // Body
+            ctx.fillStyle = '#5a3a1a';
+            ctx.fillRect(-thickness * 0.5, -thickness / 2, len, thickness);
+            // Lit tip
+            ctx.fillStyle = '#ff5a1a';
+            ctx.fillRect(len - thickness * 0.5, -thickness / 2, thickness * 0.5, thickness);
+            ctx.fillStyle = '#3a2a1a';
+            ctx.fillRect(-thickness * 0.6, -thickness / 2, thickness * 0.3, thickness);
+            // Smoke
+            ctx.fillStyle = 'rgba(220,220,220,0.45)';
+            for (let i = 0; i < 4; i++) {
+                ctx.beginPath();
+                ctx.arc(len + thickness + i * thickness * 0.7,
+                        -thickness * (1 + i * 0.6),
+                        thickness * (0.6 + i * 0.2), 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // ---------- SIGMA MALE ----------
+        function drawSigma(a) {
+            // Wraparound sunglasses spanning both eyes
+            drawShades(a.leftEye, a.rightEye, a.eyeDist, a.faceTilt);
+
+            // Goatee — a small triangle of hair on the chin
+            drawGoatee(a.upperLip, a.chin, a.mouthLeft, a.mouthRight, a.faceTilt);
+
+            // Subtle smirk highlight
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+            ctx.lineWidth = Math.max(1, a.eyeDist * 0.04);
+            ctx.beginPath();
+            ctx.moveTo(a.mouthLeft.x, a.mouthLeft.y);
+            ctx.quadraticCurveTo(
+                (a.mouthLeft.x + a.mouthRight.x) / 2,
+                (a.mouthLeft.y + a.mouthRight.y) / 2 - a.eyeDist * 0.08,
+                a.mouthRight.x, a.mouthRight.y - a.eyeDist * 0.05
+            );
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawShades(leftEye, rightEye, eyeDist, tilt) {
+            const center = mid(leftEye, rightEye);
+            const lensW = eyeDist * 0.95;
+            const lensH = eyeDist * 0.55;
+            const gap = eyeDist * 0.15;
+
+            ctx.save();
+            ctx.translate(center.x, center.y);
+            ctx.rotate(tilt);
+
+            // Bridge
+            ctx.fillStyle = '#111';
+            ctx.fillRect(-gap / 2, -lensH * 0.1, gap, lensH * 0.2);
+
+            // Lenses
+            for (const sign of [-1, 1]) {
+                const cx = sign * (gap / 2 + lensW / 2);
+                ctx.fillStyle = '#0a0a0a';
+                ctx.beginPath();
+                ctx.ellipse(cx, 0, lensW / 2, lensH / 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // Frame
+                ctx.strokeStyle = '#222';
+                ctx.lineWidth = Math.max(2, eyeDist * 0.04);
+                ctx.beginPath();
+                ctx.ellipse(cx, 0, lensW / 2, lensH / 2, 0, 0, Math.PI * 2);
+                ctx.stroke();
+                // Reflection
+                ctx.fillStyle = 'rgba(0, 200, 255, 0.35)';
+                ctx.beginPath();
+                ctx.ellipse(cx - lensW * 0.15, -lensH * 0.15, lensW * 0.18, lensH * 0.1, -0.4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Temples
+            ctx.fillStyle = '#111';
+            ctx.fillRect(gap / 2 + lensW, -lensH * 0.05, eyeDist * 0.5, lensH * 0.1);
+            ctx.fillRect(-gap / 2 - lensW - eyeDist * 0.5, -lensH * 0.05, eyeDist * 0.5, lensH * 0.1);
+
+            ctx.restore();
+        }
+
+        function drawGoatee(upperLip, chin, mouthLeft, mouthRight, tilt) {
+            ctx.save();
+            ctx.fillStyle = '#1a1a1a';
+            ctx.beginPath();
+            const lipMid = mid(mouthLeft, mouthRight);
+            ctx.moveTo(mouthLeft.x + 4, mouthLeft.y + 6);
+            ctx.lineTo(mouthRight.x - 4, mouthRight.y + 6);
+            ctx.lineTo(chin.x + 6, chin.y - 4);
+            ctx.lineTo(chin.x - 6, chin.y - 4);
+            ctx.closePath();
+            ctx.fill();
+            // A bit of stubble below the lip
+            ctx.fillRect(lipMid.x - 8, lipMid.y + 4, 16, 6);
+            ctx.restore();
+        }
+
+        // Default selection
+        select('none');
     </script>
 </body>
 </html>
