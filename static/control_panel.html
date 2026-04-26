@@ -15,11 +15,23 @@
         #video-input { display: none; }
         #stage-canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
         .metrics { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 10px; font-size: 12px; border: 1px solid #00ff88; z-index: 10; }
-        button { background: #00ff88; color: #000; border: none; padding: 10px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; font-family: inherit; }
+        button { background: #00ff88; color: #000; border: none; padding: 10px; cursor: pointer; font-weight: bold; flex: 1; margin-top: 0; font-family: inherit; }
         button:disabled { background: #222; color: #555; cursor: not-allowed; }
+        button.danger { background: #ff3a3a; color: #000; }
+        button.recording { background: #ff3a3a; color: #fff; animation: pulse 0.8s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
         input[type="range"] { width: 100%; accent-color: #00ff88; }
         label { display: block; margin-top: 12px; font-size: 12px; }
         .val { color: #fff; }
+        .countdown { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.8); border: 1px solid #ff3a3a; color: #ff3a3a; padding: 8px 14px; font-weight: bold; font-size: 14px; z-index: 10; display: none; }
+        .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 100; }
+        .modal-bg.show { display: flex; }
+        .modal { background: #0a0a0a; border: 2px solid #00ff88; padding: 20px; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; gap: 10px; }
+        .modal video { max-width: 80vw; max-height: 65vh; background: #000; }
+        .modal-actions { display: flex; gap: 10px; }
+        .privacy-note { font-size: 11px; color: #00d4ff; text-align: center; padding: 4px; }
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+        .toggle-row input { accent-color: #00ff88; }
     </style>
 </head>
 <body>
@@ -39,11 +51,13 @@
                     FACE: <span id="face-state" class="val">—</span><br>
                     ACTIVE: <span id="active-id" class="val">NONE</span>
                 </div>
+                <div class="countdown" id="countdown">REC 5.0s</div>
                 <video id="video-input" autoplay playsinline muted></video>
                 <canvas id="stage-canvas"></canvas>
             </div>
             <div style="padding:15px; background:#111; display:flex; gap:10px;">
                 <button id="cam-btn" onclick="initCam()">INIT CAMERA</button>
+                <button id="rec-btn" onclick="toggleRecord()" disabled>RECORD (5s)</button>
             </div>
         </div>
 
@@ -55,6 +69,34 @@
             <input type="range" id="opacity-slider" min="0" max="100" value="100">
             <label>VERTICAL OFFSET <span id="offset-val" class="val">0</span></label>
             <input type="range" id="offset-slider" min="-50" max="50" value="0">
+
+            <h3 style="margin-top:24px;">▶ VOICE</h3>
+            <label>PITCH <span id="pitch-val" class="val">1.00x</span></label>
+            <input type="range" id="pitch-slider" min="50" max="150" value="100">
+            <div class="toggle-row">
+                <label style="margin:0;">MONITOR (headphones!)</label>
+                <input type="checkbox" id="monitor-toggle">
+            </div>
+            <div class="privacy-note" style="margin-top:18px;">
+                Recordings stay on your device.<br>Nothing uploads. Nothing saves automatically.
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="preview-modal">
+        <div class="modal">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <strong>PREVIEW (in memory only)</strong>
+                <span id="preview-info" style="color:#888; font-size:11px;"></span>
+            </div>
+            <video id="preview-video" controls playsinline></video>
+            <div class="modal-actions">
+                <button id="share-btn" onclick="shareClip()">SHARE</button>
+                <button class="danger" onclick="discardClip()">DISCARD</button>
+            </div>
+            <div class="privacy-note">
+                This clip exists only in your browser's memory. Closing this window deletes it.
+            </div>
         </div>
     </div>
 
@@ -75,10 +117,28 @@
         const scaleVal = document.getElementById('scale-val');
         const opacityVal = document.getElementById('opacity-val');
         const offsetVal = document.getElementById('offset-val');
+        const pitchSlider = document.getElementById('pitch-slider');
+        const pitchVal = document.getElementById('pitch-val');
+        const monitorToggle = document.getElementById('monitor-toggle');
+        const recBtn = document.getElementById('rec-btn');
+        const countdownEl = document.getElementById('countdown');
+        const previewModal = document.getElementById('preview-modal');
+        const previewVideo = document.getElementById('preview-video');
+        const previewInfo = document.getElementById('preview-info');
+        const shareBtn = document.getElementById('share-btn');
 
         scaleSlider.oninput = () => scaleVal.textContent = scaleSlider.value + '%';
         opacitySlider.oninput = () => opacityVal.textContent = opacitySlider.value + '%';
         offsetSlider.oninput = () => offsetVal.textContent = offsetSlider.value;
+        pitchSlider.oninput = () => {
+            const ratio = parseInt(pitchSlider.value, 10) / 100;
+            pitchVal.textContent = ratio.toFixed(2) + 'x';
+            applyVoiceParams({ pitch: ratio }, true);
+        };
+        monitorToggle.onchange = () => {
+            if (!audio) return;
+            audio.monitorGain.gain.value = monitorToggle.checked ? 1.0 : 0.0;
+        };
 
         let landmarker = null;
         let selected = 'none';
@@ -86,12 +146,34 @@
         let frameCount = 0;
         let lastFpsT = performance.now();
 
+        // Per-persona voice presets (pitch ratio + EQ tilt)
+        const VOICE_PRESETS = {
+            none:                  { pitch: 1.00, lowGain:  0, highGain:  0, midFreq: 1000, midGain: 0 },
+            old_man_yeller:        { pitch: 0.82, lowGain: -2, highGain: -5, midFreq: 1700, midGain: 4 },
+            south_central_commie:  { pitch: 0.88, lowGain:  3, highGain: -3, midFreq:  650, midGain: 2 },
+            sigma_male:            { pitch: 0.74, lowGain:  6, highGain: -8, midFreq:  260, midGain: 4 }
+        };
+
+        // Live audio chain (created on initCam)
+        let audio = null;       // { ctx, source, pitchNode, lowShelf, highShelf, peaking, dest, monitorGain }
+        let recorder = null;    // MediaRecorder
+        let recordedChunks = [];
+        let recordTimer = null;
+        let countdownTimer = null;
+        let currentClip = null; // { url, blob, mime, ext }
+
         window.select = function(id) {
             selected = id;
             activeEl.textContent = id.toUpperCase();
             document.querySelectorAll('.persona-card').forEach(c => {
                 c.classList.toggle('active', c.dataset.id === id);
             });
+            // Apply voice preset (and update slider to match)
+            const preset = VOICE_PRESETS[id] || VOICE_PRESETS.none;
+            pitchSlider.value = Math.round(preset.pitch * 100);
+            pitchVal.textContent = preset.pitch.toFixed(2) + 'x';
+            applyVoiceParams(preset, false);
+
             // Notify backend (existing API)
             if (id !== 'none') {
                 fetch('/api/activate', {
@@ -101,6 +183,94 @@
                 }).catch(() => {});
             }
         };
+
+        // ---------- AUDIO CHAIN ----------
+        // Mic -> PitchShifter (AudioWorklet) -> LowShelf -> Peaking -> HighShelf
+        //   -> split: MediaStreamDestination (for recording) and MonitorGain -> speakers
+        const PITCH_WORKLET = `
+            class PitchShifter extends AudioWorkletProcessor {
+                static get parameterDescriptors() {
+                    return [{ name: 'pitch', defaultValue: 1.0, minValue: 0.25, maxValue: 4.0, automationRate: 'k-rate' }];
+                }
+                constructor() {
+                    super();
+                    this.bufSize = 4096;
+                    this.buf = new Float32Array(this.bufSize);
+                    this.write = 0;
+                    this.read1 = 0;
+                    this.read2 = this.bufSize / 2;
+                }
+                process(inputs, outputs, params) {
+                    const inp = inputs[0];
+                    const out = outputs[0];
+                    if (!inp || !inp[0] || !out || !out[0]) return true;
+                    const pitch = params.pitch[0];
+                    const inCh = inp[0];
+                    const outCh = out[0];
+                    const N = this.bufSize;
+                    const half = N / 2;
+                    for (let i = 0; i < inCh.length; i++) {
+                        this.buf[this.write] = inCh[i];
+                        const r1 = this.read1 | 0;
+                        const r2 = this.read2 | 0;
+                        const d1 = ((this.write - this.read1) + N) % N;
+                        const d2 = ((this.write - this.read2) + N) % N;
+                        const w1 = Math.abs(d1 - half) / half;
+                        const w2 = Math.abs(d2 - half) / half;
+                        const wsum = (w1 + w2) || 1;
+                        outCh[i] = (this.buf[r1 % N] * w1 + this.buf[r2 % N] * w2) / wsum;
+                        this.write = (this.write + 1) % N;
+                        this.read1 = (this.read1 + pitch) % N;
+                        this.read2 = (this.read2 + pitch) % N;
+                    }
+                    return true;
+                }
+            }
+            registerProcessor('pitch-shifter', PitchShifter);
+        `;
+
+        async function initAudio() {
+            const micStream = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            });
+            const ctx = new AudioContext();
+            const blob = new Blob([PITCH_WORKLET], { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
+            await ctx.audioWorklet.addModule(url);
+            URL.revokeObjectURL(url);
+
+            const source = ctx.createMediaStreamSource(micStream);
+            const pitchNode = new AudioWorkletNode(ctx, 'pitch-shifter');
+            const lowShelf = ctx.createBiquadFilter();
+            lowShelf.type = 'lowshelf'; lowShelf.frequency.value = 200; lowShelf.gain.value = 0;
+            const peaking = ctx.createBiquadFilter();
+            peaking.type = 'peaking'; peaking.frequency.value = 1000; peaking.Q.value = 1; peaking.gain.value = 0;
+            const highShelf = ctx.createBiquadFilter();
+            highShelf.type = 'highshelf'; highShelf.frequency.value = 4000; highShelf.gain.value = 0;
+            const dest = ctx.createMediaStreamDestination();
+            const monitorGain = ctx.createGain();
+            monitorGain.gain.value = 0; // muted by default
+
+            source.connect(pitchNode).connect(lowShelf).connect(peaking).connect(highShelf);
+            highShelf.connect(dest);
+            highShelf.connect(monitorGain).connect(ctx.destination);
+
+            audio = { ctx, micStream, source, pitchNode, lowShelf, peaking, highShelf, dest, monitorGain };
+        }
+
+        function applyVoiceParams(p, partial) {
+            if (!audio) return;
+            const t = audio.ctx.currentTime;
+            if (p.pitch !== undefined) {
+                audio.pitchNode.parameters.get('pitch').setValueAtTime(p.pitch, t);
+            }
+            if (!partial) {
+                if (p.lowGain !== undefined)  audio.lowShelf.gain.setValueAtTime(p.lowGain, t);
+                if (p.highGain !== undefined) audio.highShelf.gain.setValueAtTime(p.highGain, t);
+                if (p.midFreq !== undefined)  audio.peaking.frequency.setValueAtTime(p.midFreq, t);
+                if (p.midGain !== undefined)  audio.peaking.gain.setValueAtTime(p.midGain, t);
+            }
+        }
 
         window.initCam = async function() {
             const btn = document.getElementById('cam-btn');
@@ -126,7 +296,17 @@
                 video.srcObject = stream;
                 await video.play();
 
+                btn.textContent = 'STARTING MIC…';
+                try {
+                    await initAudio();
+                    // Apply current persona's voice preset
+                    applyVoiceParams(VOICE_PRESETS[selected] || VOICE_PRESETS.none, false);
+                } catch (audioErr) {
+                    console.warn('Audio init failed, continuing video-only:', audioErr);
+                }
+
                 btn.textContent = 'NEURAL LINK ACTIVE';
+                recBtn.disabled = false;
                 requestAnimationFrame(loop);
             } catch (err) {
                 console.error(err);
@@ -135,6 +315,119 @@
                 alert('Camera/model init failed: ' + err.message);
             }
         };
+
+        // ---------- RECORDING (5s, in-memory only) ----------
+        function pickMime() {
+            const candidates = [
+                'video/webm;codecs=vp9,opus',
+                'video/webm;codecs=vp8,opus',
+                'video/webm;codecs=h264,opus',
+                'video/webm',
+                'video/mp4'
+            ];
+            for (const c of candidates) {
+                if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c;
+            }
+            return '';
+        }
+
+        window.toggleRecord = function() {
+            if (recorder && recorder.state === 'recording') {
+                stopRecord();
+            } else {
+                startRecord();
+            }
+        };
+
+        function startRecord() {
+            if (!canvas.width) {
+                alert('Camera not ready yet.');
+                return;
+            }
+            const videoStream = canvas.captureStream(30);
+            const tracks = [...videoStream.getVideoTracks()];
+            if (audio) tracks.push(...audio.dest.stream.getAudioTracks());
+            const combined = new MediaStream(tracks);
+
+            const mime = pickMime();
+            try {
+                recorder = mime ? new MediaRecorder(combined, { mimeType: mime }) : new MediaRecorder(combined);
+            } catch (e) {
+                alert('Recording not supported in this browser: ' + e.message);
+                return;
+            }
+            recordedChunks = [];
+            recorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+            recorder.onstop = () => {
+                const usedMime = recorder.mimeType || mime || 'video/webm';
+                const ext = usedMime.includes('mp4') ? 'mp4' : 'webm';
+                const blob = new Blob(recordedChunks, { type: usedMime });
+                recordedChunks = [];
+                openPreview(blob, usedMime, ext);
+            };
+
+            recorder.start();
+            recBtn.classList.add('recording');
+            recBtn.textContent = 'STOP';
+
+            // 5-second hard cap with countdown
+            let remaining = 5.0;
+            countdownEl.style.display = 'block';
+            countdownEl.textContent = 'REC ' + remaining.toFixed(1) + 's';
+            countdownTimer = setInterval(() => {
+                remaining = Math.max(0, remaining - 0.1);
+                countdownEl.textContent = 'REC ' + remaining.toFixed(1) + 's';
+            }, 100);
+            recordTimer = setTimeout(stopRecord, 5000);
+        }
+
+        function stopRecord() {
+            if (recordTimer) { clearTimeout(recordTimer); recordTimer = null; }
+            if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+            countdownEl.style.display = 'none';
+            recBtn.classList.remove('recording');
+            recBtn.textContent = 'RECORD (5s)';
+            if (recorder && recorder.state !== 'inactive') {
+                recorder.stop();
+            }
+        }
+
+        function openPreview(blob, mime, ext) {
+            // Wipe any prior clip
+            discardClip();
+            const url = URL.createObjectURL(blob);
+            currentClip = { blob, url, mime, ext, name: `persona-${Date.now()}.${ext}` };
+            previewVideo.src = url;
+            previewInfo.textContent = `${(blob.size / 1024).toFixed(0)} KB · ${mime.split(';')[0]}`;
+            // Hide share button if Web Share API can't handle files
+            const file = new File([blob], currentClip.name, { type: mime });
+            const canShareFiles = navigator.canShare && navigator.canShare({ files: [file] });
+            shareBtn.style.display = canShareFiles ? 'block' : 'none';
+            previewModal.classList.add('show');
+        }
+
+        window.shareClip = async function() {
+            if (!currentClip) return;
+            try {
+                const file = new File([currentClip.blob], currentClip.name, { type: currentClip.mime });
+                await navigator.share({ files: [file], title: 'Persona Matrix' });
+            } catch (e) {
+                if (e.name !== 'AbortError') alert('Share failed: ' + e.message);
+            }
+        };
+
+        window.discardClip = function() {
+            if (currentClip) {
+                URL.revokeObjectURL(currentClip.url);
+                currentClip = null;
+            }
+            previewVideo.removeAttribute('src');
+            previewVideo.load();
+            previewModal.classList.remove('show');
+        };
+        previewModal.addEventListener('click', (e) => {
+            if (e.target === previewModal) discardClip();
+        });
 
         // Selected mediapipe FaceLandmarker landmark indices (478-pt model)
         const IDX = {
